@@ -69,6 +69,8 @@ $next_rent_date = DateTime::createFromFormat('Y-m-d', $next_month . '-' . $start
 
 $current_payment = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id='$tenant_id' AND month_paid='$current_month'"));
 $next_payment = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id='$tenant_id' AND month_paid='$next_month'"));
+$current_status_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT status FROM payments WHERE tenant_id='$tenant_id' AND month_paid='$current_month' ORDER BY status='Paid' DESC, status='Partial' DESC LIMIT 1"));
+$current_status = $current_status_row && !empty($current_status_row['status']) ? $current_status_row['status'] : null;
 
 // Calculate notification data - for unpaid/partial payments and near due dates
 $notifications = [];
@@ -305,7 +307,7 @@ $show_reminder = $notification_count > 0;
                         <div class="h5 mb-0 fw-semibold">
                             <?php
                             $current_amount = $current_payment ? floatval($current_payment['total']) : 0;
-                            $status = $current_amount >= $rent_amount ? 'Paid' : ($current_amount > 0 ? 'Partial' : 'Unpaid');
+                            $status = $current_status ?? ($current_amount > 0 ? 'Partial' : 'Unpaid');
                             echo $status;
                             ?>
                         </div>
@@ -385,7 +387,7 @@ $show_reminder = $notification_count > 0;
                     $amount = floatval($row['amount']);
                     $total_for_month = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id='$tenant_id' AND month_paid='".$row['month_paid']."'"))['total'];
                     if ($amount == 0 && $total_for_month > 0) continue; // Skip 0 amount rows if there are payments in the month
-                    $status = $total_for_month >= $rent_amount ? 'Paid' : ($total_for_month > 0 ? 'Partial' : 'Unpaid');
+                    $status = !empty($row['status']) ? $row['status'] : ($total_for_month > 0 ? 'Partial' : 'Unpaid');
                     $display_amount = $amount == 0 ? "0.00 / ".number_format($rent_amount, 2) : number_format($amount, 2);
                     $month_display = DateTime::createFromFormat('Y-m', $row['month_paid'])->format('F Y');
                     $day_display   = ($row['date_paid']) ? (new DateTime($row['date_paid']))->format('d F Y') : '';

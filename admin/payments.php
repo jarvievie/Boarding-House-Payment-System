@@ -15,16 +15,17 @@ if(isset($_POST['record_payment'])) {
   $amount    = floatval($_POST['amount']);
   $month     = $_POST['month'];
   $received_by = mysqli_real_escape_string($conn, $_POST['received_by'] ?? '');
-  $rent      = mysqli_fetch_assoc(mysqli_query($conn,"SELECT rent_amount FROM tenants WHERE tenant_id=$tenant_id"))['rent_amount'];
+  $rent_row  = mysqli_fetch_assoc(mysqli_query($conn,"SELECT rent_amount FROM tenants WHERE tenant_id=$tenant_id"));
+  $rent      = $rent_row ? floatval($rent_row['rent_amount']) : 0.0;
 
-  // Always insert a new payment record for each transaction
-  mysqli_query($conn, "INSERT INTO payments (tenant_id, month_paid, amount, payment_method, status, remarks, date_paid, received_by) VALUES ($tenant_id, '$month', $amount, '', 'Pending', NULL, NOW(), '$received_by')");
+  // Compute cumulative before this transaction to decide ONLY this row's status
+  $sum_before_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE tenant_id=$tenant_id AND month_paid='$month'"));
+  $sum_before = $sum_before_row ? floatval($sum_before_row['total']) : 0.0;
+  $new_total = $sum_before + $amount;
+  $this_status = ($new_total >= $rent) ? 'Paid' : (($amount > 0) ? 'Partial' : 'Unpaid');
 
-  // Update the status to 'Paid' if total payments for the month reach rent_amount
-  $total_paid = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id=$tenant_id AND month_paid='$month'"))['total'];
-  if($total_paid >= $rent) {
-    mysqli_query($conn, "UPDATE payments SET status='Paid' WHERE tenant_id=$tenant_id AND month_paid='$month'");
-  }
+  // Insert this payment with the computed status; do NOT alter other rows
+  mysqli_query($conn, "INSERT INTO payments (tenant_id, month_paid, amount, payment_method, status, remarks, date_paid, received_by) VALUES ($tenant_id, '$month', $amount, '', '$this_status', NULL, NOW(), '$received_by')");
 }
 
 /* Modify months: add or delete */
@@ -39,7 +40,7 @@ if(isset($_POST['modify_months'])){
     $d = new DateTime($baseMonth.'-01');
     for($i=0;$i<$n;$i++){
       $d->modify('+1 month');
-      mysqli_query($conn,"INSERT INTO payments(tenant_id,month_paid,amount) VALUES($tid,'".$d->format('Y-m')."',0)");
+      mysqli_query($conn,"INSERT INTO payments(tenant_id,month_paid,amount,status) VALUES($tid,'".$d->format('Y-m')."',0,'Unpaid')");
     }
   }
 
@@ -66,17 +67,19 @@ $tenants = mysqli_query($conn,$sql);
 $total_payments = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments"))['total'] ?? 0;
 $current_month = date('Y-m');
 
-// Count tenants with current month payment status
+// Count tenants with current month payment status using payments.status
 $paid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT COUNT(*) as count FROM tenants t
-    LEFT JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
-    WHERE COALESCE(p.amount, 0) >= t.rent_amount
+    SELECT COUNT(DISTINCT t.tenant_id) as count
+    FROM tenants t
+    JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
+    WHERE p.status = 'Paid'
 "))['count'] ?? 0;
 
 $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT COUNT(*) as count FROM tenants t
-    LEFT JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
-    WHERE COALESCE(p.amount, 0) < t.rent_amount
+    SELECT COUNT(DISTINCT t.tenant_id) as count
+    FROM tenants t
+    JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
+    WHERE p.status = 'Unpaid'
 "))['count'] ?? 0;
 
 $current_month_income = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE month_paid = '$current_month'"))['total'] ?? 0;
@@ -225,12 +228,13 @@ $current_month_income = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amoun
       </tr>
     </thead>
     <tbody>
-    <?php while($t=mysqli_fetch_assoc($tenants)): 
-      // Get payment summary for this tenant
+    <?php while($t=mysqli_fetch_assoc($tenants)):
+      // Get payment summary and status for this tenant
   $current_month_payment = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id=".$t['tenant_id']." AND month_paid='$current_month'"));
   $current_amount = $current_month_payment ? floatval($current_month_payment['total']) : 0;
   $rent_amount = floatval($t['rent_amount']);
-  $status = $current_amount >= $rent_amount ? 'Paid' : ($current_amount > 0 ? 'Partial' : 'Unpaid');
+  $status_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT status FROM payments WHERE tenant_id=".$t['tenant_id']." AND month_paid='$current_month' ORDER BY status='Paid' DESC, status='Partial' DESC LIMIT 1"));
+  $status = $status_row && !empty($status_row['status']) ? $status_row['status'] : ($current_amount > 0 ? 'Partial' : 'Unpaid');
   $status_class = strtolower($status);
     ?>
     <tr>
@@ -339,7 +343,7 @@ $p = mysqli_query($conn,"SELECT * FROM payments WHERE tenant_id=".$t['tenant_id'
               $amount = floatval($row['amount']);
               $total_for_month = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id=".$t['tenant_id']." AND month_paid='".$row['month_paid']."'"))['total'];
               if ($amount == 0 && $total_for_month > 0) continue; // Skip 0 amount rows if there are payments in the month
-              $status = $total_for_month >= $t['rent_amount'] ? 'Paid' : ($total_for_month > 0 ? 'Partial' : 'Unpaid');
+              $status = !empty($row['status']) ? $row['status'] : ($total_for_month > 0 ? 'Partial' : 'Unpaid');
               $status_class = strtolower($status);
               $month_display = DateTime::createFromFormat('Y-m', $row['month_paid'])->format('F Y');
               $date_display = $row['date_paid'] ? (new DateTime($row['date_paid']))->format('M d, Y') : 'Not paid';

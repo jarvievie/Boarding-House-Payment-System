@@ -44,8 +44,8 @@ if (isset($_POST['add'])) {
 
                 $d = new DateTime($start);
                 for ($i=0; $i<12; $i++) {
-                    // Default received_by as empty for initial months
-                    mysqli_query($conn, "INSERT INTO payments (tenant_id,month_paid,amount,received_by) VALUES ($tenant_id,'".$d->format('Y-m')."',0,'')");
+                    // Seed months as Unpaid with amount 0
+                    mysqli_query($conn, "INSERT INTO payments (tenant_id,month_paid,amount,status,received_by) VALUES ($tenant_id,'".$d->format('Y-m')."',0,'Unpaid','')");
                     $d->modify('+1 month');
                 }
             }
@@ -120,26 +120,26 @@ $room_occupancy = mysqli_fetch_assoc(mysqli_query($conn, "
     ORDER BY room_number
 "));
 
-// Count tenants with current month payment status using same logic as manage payments
+// Count tenants by payments.status for current month
 $paid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT COUNT(*) as count FROM tenants t
-    LEFT JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
-    WHERE COALESCE(p.amount, 0) >= t.rent_amount
+    SELECT COUNT(DISTINCT t.tenant_id) as count
+    FROM tenants t
+    JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
+    WHERE p.status = 'Paid'
 "))['count'] ?? 0;
 
 $partial_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT COUNT(*) as count FROM tenants t
-    LEFT JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
-    WHERE COALESCE(p.amount, 0) > 0 AND COALESCE(p.amount, 0) < t.rent_amount
-    AND CURDATE() < STR_TO_DATE(CONCAT(DATE_FORMAT(CURDATE(), '%Y-%m'), '-', DAY(t.start_date)), '%Y-%m-%d')
+    SELECT COUNT(DISTINCT t.tenant_id) as count
+    FROM tenants t
+    JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
+    WHERE p.status = 'Partial'
 "))['count'] ?? 0;
 
 $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT COUNT(*) as count FROM tenants t
-    LEFT JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
-    WHERE COALESCE(p.amount, 0) < t.rent_amount
-    AND (CURDATE() >= STR_TO_DATE(CONCAT(DATE_FORMAT(CURDATE(), '%Y-%m'), '-', DAY(t.start_date)), '%Y-%m-%d')
-         OR COALESCE(p.amount, 0) = 0)
+    SELECT COUNT(DISTINCT t.tenant_id) as count
+    FROM tenants t
+    JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
+    WHERE p.status = 'Unpaid'
 "))['count'] ?? 0;
 
 ?>
@@ -296,19 +296,13 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
         </tr>
       </thead>
       <tbody>
-      <?php while($t=mysqli_fetch_assoc($tenants)){ 
-    // Get current month payment status using sum of all payments for the month
+      <?php while($t=mysqli_fetch_assoc($tenants)){
+    // Derive current month status from payments.status and show amount summary for context
     $current_month_payment = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id=".$t['tenant_id']." AND month_paid='$current_month'"));
     $current_amount = $current_month_payment ? floatval($current_month_payment['total']) : 0;
     $rent_amount = floatval($t['rent_amount']);
-    // Status logic: Paid, Partial, Unpaid
-    if ($current_amount >= $rent_amount) {
-      $status = 'Paid';
-    } elseif ($current_amount > 0) {
-      $status = 'Partial';
-    } else {
-      $status = 'Unpaid';
-    }
+    $status_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT status FROM payments WHERE tenant_id=".$t['tenant_id']." AND month_paid='$current_month' ORDER BY status='Paid' DESC, status='Partial' DESC LIMIT 1"));
+    $status = $status_row && !empty($status_row['status']) ? $status_row['status'] : ($current_amount > 0 ? 'Partial' : 'Unpaid');
     $status_class = strtolower($status);
     // Get room occupancy
     $room_count = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as count FROM tenants WHERE room_number='".$t['room_number']."'"))['count'];

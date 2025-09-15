@@ -22,15 +22,15 @@ $current_month = date('Y-m');
 
 // Count tenants with current month payment status
 $paid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT COUNT(*) as count FROM tenants t
-    LEFT JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
-    WHERE COALESCE(p.amount, 0) >= t.rent_amount
+    SELECT COUNT(DISTINCT t.tenant_id) as count FROM tenants t
+    JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
+    WHERE p.status = 'Paid' 
 "))['count'] ?? 0;
 
 $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
-    SELECT COUNT(*) as count FROM tenants t
-    LEFT JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
-    WHERE COALESCE(p.amount, 0) < t.rent_amount
+    SELECT COUNT(DISTINCT t.tenant_id) as count FROM tenants t
+    JOIN payments p ON t.tenant_id = p.tenant_id AND p.month_paid = '$current_month'
+    WHERE p.status = 'Unpaid'
 "))['count'] ?? 0;
 
 $current_month_income = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE month_paid = '$current_month'"))['total'] ?? 0;
@@ -57,39 +57,62 @@ if ($tenant_id) {
     // Fetch tenant info
     $tenant = mysqli_fetch_assoc(mysqli_query($conn, "SELECT * FROM tenants WHERE tenant_id=$tenant_id"));
 
-    // Fetch payments
-    $payments = mysqli_query($conn, "SELECT amount, date_paid, month_paid FROM payments WHERE tenant_id=$tenant_id ORDER BY month_paid ASC");
+    // Build Paid/Partial/Unpaid buckets using simple WHERE filters on payments.status
+    // Overall totals and current month sum for header metrics
+    $total_paid_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) AS total FROM payments WHERE tenant_id=$tenant_id"));
+    $total_paid_sum = $total_paid_row && $total_paid_row['total'] !== null ? floatval($total_paid_row['total']) : 0.0;
+    $current_month_key = date('Y-m');
+    $current_paid_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) AS total FROM payments WHERE tenant_id=$tenant_id AND month_paid='$current_month_key'"));
+    $current_month_sum = $current_paid_row && $current_paid_row['total'] !== null ? floatval($current_paid_row['total']) : 0.0;
 
-    $payments_list = [];
+    $months_with_record = [];
     $months_paid = [];
     $paid_months = [];
     $partial_months = [];
     $unpaid_months = [];
+    $months_partial = [];
     $rent_for_month = floatval($tenant['rent_amount']);
-    while ($p = mysqli_fetch_assoc($payments)) {
-        $amount_val = floatval($p['amount']);
-        $month_key  = $p['month_paid'];
-        $payments_list[] = "₱" . number_format($amount_val, 2) . " - " . ($p['date_paid'] ?? 'Unpaid');
-        $months_paid[] = $month_key;
 
-        if ($amount_val >= $rent_for_month) {
-            $paid_months[] = ['month' => $month_key, 'amount' => $amount_val, 'date_paid' => $p['date_paid']];
-        } elseif ($amount_val > 0) {
-            $partial_months[] = ['month' => $month_key, 'amount' => $amount_val];
-        } else {
-            $unpaid_months[] = $month_key;
-        }
+    // Paid months
+    $qPaid = mysqli_query($conn, "SELECT month_paid, SUM(amount) AS total_amount, MAX(date_paid) AS last_date FROM payments WHERE tenant_id=$tenant_id AND status='Paid' GROUP BY month_paid ORDER BY month_paid ASC");
+    while ($row = mysqli_fetch_assoc($qPaid)) {
+        $month_key = $row['month_paid'];
+        $paid_months[] = ['month' => $month_key, 'amount' => floatval($row['total_amount']), 'date_paid' => $row['last_date']];
+        $months_paid[] = $month_key;
     }
 
-    // Calculate months pending
+    // Collect ALL partial rows (transaction-level), regardless of whether the month later became Paid
+    $partial_entries = [];
+    $qPartialRows = mysqli_query($conn, "SELECT month_paid, amount, date_paid FROM payments WHERE tenant_id=$tenant_id AND status='Partial' ORDER BY month_paid ASC, date_paid ASC, payment_id ASC");
+    while ($row = mysqli_fetch_assoc($qPartialRows)) {
+        $partial_entries[] = [
+            'month' => $row['month_paid'],
+            'amount' => floatval($row['amount']),
+            'date_paid' => $row['date_paid']
+        ];
+        $months_partial[] = $row['month_paid'];
+    }
+
+    // Unpaid months (only unpaid records, excluding paid/partial)
+    $qUnpaid = mysqli_query($conn, "SELECT DISTINCT month_paid FROM payments WHERE tenant_id=$tenant_id AND status='Unpaid' ORDER BY month_paid ASC");
+    while ($row = mysqli_fetch_assoc($qUnpaid)) {
+        $m = $row['month_paid'];
+        if (in_array($m, $months_paid, true) || in_array($m, $months_partial, true)) continue;
+        $unpaid_months[] = $m;
+    }
+
+    // Months with any record (for pending calculation)
+    $qAll = mysqli_query($conn, "SELECT DISTINCT month_paid FROM payments WHERE tenant_id=$tenant_id");
+    while ($row = mysqli_fetch_assoc($qAll)) { $months_with_record[] = $row['month_paid']; }
+
+    // Calculate months pending (no record at all)
     $start = new DateTime($tenant['start_date']);
     $end = new DateTime(date('Y-m-01'));
     $interval = new DateInterval('P1M');
     $period = new DatePeriod($start, $interval, $end->modify('+1 month'));
     $all_months = [];
-    foreach ($period as $dt)
-        $all_months[] = $dt->format('Y-m');
-    $months_pending = array_diff($all_months, $months_paid);
+    foreach ($period as $dt) $all_months[] = $dt->format('Y-m');
+    $months_pending = array_diff($all_months, $months_with_record);
 
 } else {
     // Fetch tenants and determine current month payment status using same logic as payments.php
@@ -278,10 +301,8 @@ if ($tenant_id) {
             <div class="card-body">
                 <p><strong>Room:</strong> <?php echo $tenant['room_number']; ?></p>
                 <p><strong>Rent:</strong> ₱<?php echo number_format($tenant['rent_amount'],); ?></p>
-                <p><strong>Total Paid:</strong>
-                    ₱<?php echo number_format(array_sum(array_map(fn($p)=>floatval(preg_replace('/[^0-9.]/','',$p)), $payments_list)),); ?></p>
-                <p><strong>Balance:</strong>
-                    ₱<?php echo number_format($tenant['rent_amount'] - array_sum(array_map(fn($p)=>floatval(preg_replace('/[^0-9.]/','',$p)), $payments_list)),); ?></p>
+                <p><strong>Total Paid:</strong> ₱<?php echo number_format($total_paid_sum, 2); ?></p>
+                <p><strong>Balance (This Month):</strong> ₱<?php echo number_format(max(0, floatval($tenant['rent_amount']) - $current_month_sum), 2); ?></p>
 
                 <div class="row g-3 mt-3">
                     <div class="col-md-4">
@@ -306,13 +327,14 @@ if ($tenant_id) {
                         <div class="card h-100">
                             <div class="card-header">Partial Months</div>
                             <div class="card-body">
-                                <?php if (empty($partial_months)): ?>
+                                <?php if (empty($partial_entries)): ?>
                                     <div class="text-muted small">No partial payments.</div>
                                 <?php else: ?>
                                     <ul class="mb-0">
-                                    <?php foreach ($partial_months as $pp):
-                                        $dt = DateTime::createFromFormat('Y-m',$pp['month']);
-                                        echo "<li><span class='badge badge-partial me-2'>".$dt->format('F Y')."</span> ₱".number_format($pp['amount'],2)." / ₱".number_format($rent_for_month,2)."</li>";
+                                    <?php foreach ($partial_entries as $pe):
+                                        $dt = DateTime::createFromFormat('Y-m',$pe['month']);
+                                        $datePaid = $pe['date_paid'] ? (new DateTime($pe['date_paid']))->format('M d, Y') : '-';
+                                        echo "<li><span class='badge badge-partial me-2'>".$dt->format('F Y')."</span> ₱".number_format($pe['amount'],2)." / ₱".number_format($rent_for_month,2)." <span class='text-muted small'>(".$datePaid.")</span></li>";
                                     endforeach; ?>
                                     </ul>
                                 <?php endif; ?>
@@ -371,13 +393,8 @@ if ($tenant_id) {
                     $found = true;
                     $current_amount = floatval($t['amount_this_month']);
                     $rent_amount = floatval($t['rent_amount']);
-                    if ($current_amount >= $rent_amount) {
-                        $status = 'Paid';
-                    } elseif ($current_amount > 0) {
-                        $status = 'Partial';
-                    } else {
-                        $status = 'Unpaid';
-                    }
+                    $status_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT status FROM payments WHERE tenant_id=".$t['tenant_id']." AND month_paid = DATE_FORMAT(CURDATE(), '%Y-%m') ORDER BY status='Paid' DESC, status='Partial' DESC LIMIT 1"));
+                    $status = $status_row && !empty($status_row['status']) ? $status_row['status'] : ($current_amount > 0 ? 'Partial' : 'Unpaid');
                     $status_class = 'badge-' . strtolower($status);
                     // Get tenant contact info
                     $tenant_info = mysqli_fetch_assoc(mysqli_query($conn, "SELECT contact FROM tenants WHERE tenant_id=".$t['tenant_id']));
