@@ -334,7 +334,7 @@ if ($tenant_id) {
                                     <?php foreach ($partial_entries as $pe):
                                         $dt = DateTime::createFromFormat('Y-m',$pe['month']);
                                         $datePaid = $pe['date_paid'] ? (new DateTime($pe['date_paid']))->format('M d, Y') : '-';
-                                        echo "<li><span class='badge badge-partial me-2'>".$dt->format('F Y')."</span> ₱".number_format($pe['amount'],2)." / ₱".number_format($rent_for_month,2)." <span class='text-muted small'>(".$datePaid.")</span></li>";
+                                        echo "<li><span class='badge badge-partial me-2'>".$dt->format('F Y')."</span> ₱".number_format($pe['amount'],2)."<div class='text-muted small ms-4'>".$datePaid."</div></li>";
                                     endforeach; ?>
                                     </ul>
                                 <?php endif; ?>
