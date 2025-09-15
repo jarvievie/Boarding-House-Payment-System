@@ -18,31 +18,37 @@ if (isset($_POST['add'])) {
     $contact  = mysqli_real_escape_string($conn, $_POST['contact']);
     $start    = mysqli_real_escape_string($conn, $_POST['start_date']);
     $rent     = floatval($_POST['rent_amount']);
+    $address  = mysqli_real_escape_string($conn, $_POST['address']);
     $username = mysqli_real_escape_string($conn, $_POST['username']);
     $password = password_hash($_POST['password'], PASSWORD_DEFAULT);
 
-    // Check username uniqueness
-  $ex = mysqli_query($conn, "SELECT username FROM users WHERE username='$username' LIMIT 1");
-    if (mysqli_num_rows($ex) > 0) {
-        $msg="⚠ Username already exists";
+    // Validate mobile number: must start with 09 and be 11 digits
+    if (!preg_match('/^09\d{9}$/', $contact)) {
+        $msg = "⚠ Mobile number must start with 09 and be 11 digits.";
     } else {
-        // Check room capacity (max 6 tenants per room)
-        $room_count = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as count FROM tenants WHERE room_number='$room'"))['count'];
-        if ($room_count >= 6) {
-            $msg="⚠ Room $room is full (6/6 tenants). Please choose another room.";
+        // Check username uniqueness
+        $ex = mysqli_query($conn, "SELECT username FROM users WHERE username='$username' LIMIT 1");
+        if (mysqli_num_rows($ex) > 0) {
+            $msg="⚠ Username already exists";
         } else {
-            mysqli_query($conn, "INSERT INTO tenants (name,room_number,contact,start_date,rent_amount)
-                                VALUES ('$name','$room','$contact','$start',$rent)");
-            $tenant_id = mysqli_insert_id($conn);
-            // Create corresponding account record using same id
-            mysqli_query($conn, "INSERT INTO users (id, username, password, role) VALUES ($tenant_id, '$username', '$password', 'tenant')");
+            // Check room capacity (max 6 tenants per room)
+            $room_count = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as count FROM tenants WHERE room_number='$room'"))['count'];
+            if ($room_count >= 6) {
+                $msg="⚠ Room $room is full (6/6 tenants). Please choose another room.";
+            } else {
+                mysqli_query($conn, "INSERT INTO tenants (name,room_number,contact,start_date,rent_amount,address)
+                                    VALUES ('$name','$room','$contact','$start',$rent,'$address')");
+                $tenant_id = mysqli_insert_id($conn);
+                // Create corresponding account record using same id
+                mysqli_query($conn, "INSERT INTO users (id, username, password, role) VALUES ($tenant_id, '$username', '$password', 'tenant')");
 
-            $d = new DateTime($start);
-      for ($i=0; $i<12; $i++) {
-        // Default received_by as empty for initial months
-        mysqli_query($conn, "INSERT INTO payments (tenant_id,month_paid,amount,received_by) VALUES ($tenant_id,'".$d->format('Y-m')."',0,'')");
-        $d->modify('+1 month');
-      }
+                $d = new DateTime($start);
+                for ($i=0; $i<12; $i++) {
+                    // Default received_by as empty for initial months
+                    mysqli_query($conn, "INSERT INTO payments (tenant_id,month_paid,amount,received_by) VALUES ($tenant_id,'".$d->format('Y-m')."',0,'')");
+                    $d->modify('+1 month');
+                }
+            }
         }
     }
 }
@@ -55,25 +61,31 @@ if (isset($_POST['update'])) {
     $contact  = $_POST['contact'];
     $start    = $_POST['start_date'];
     $rent     = floatval($_POST['rent_amount']);
+    $address  = $_POST['address'];
     $username = mysqli_real_escape_string($conn, $_POST['username']);
 
-    // Check room capacity (max 6 tenants per room) - exclude current tenant
-    $room_count = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as count FROM tenants WHERE room_number='$room' AND tenant_id != $id"))['count'];
-    if ($room_count >= 6) {
-        $msg="⚠ Room $room is full (6/6 tenants). Please choose another room.";
+    // Validate mobile number: must start with 09 and be 11 digits
+    if (!preg_match('/^09\d{9}$/', $contact)) {
+        $msg = "⚠ Mobile number must start with 09 and be 11 digits.";
     } else {
-        // Update tenant info
-        mysqli_query($conn, "UPDATE tenants SET name='$name',room_number='$room',contact='$contact',start_date='$start',rent_amount=$rent WHERE tenant_id=$id");
-        // Update account username if changed and unique
-  $existsUser = mysqli_query($conn, "SELECT id FROM users WHERE username='$username' AND id <> $id LIMIT 1");
-        if (mysqli_num_rows($existsUser) === 0) {
-            mysqli_query($conn, "UPDATE users SET username='$username' WHERE id=$id AND role='tenant'");
+        // Check room capacity (max 6 tenants per room) - exclude current tenant
+        $room_count = mysqli_fetch_assoc(mysqli_query($conn, "SELECT COUNT(*) as count FROM tenants WHERE room_number='$room' AND tenant_id != $id"))['count'];
+        if ($room_count >= 6) {
+            $msg="⚠ Room $room is full (6/6 tenants). Please choose another room.";
         } else {
-            $msg = $msg ? $msg : "⚠ Username already exists";
-        }
-        if (!empty($_POST['password'])) {
-            $pass = password_hash($_POST['password'], PASSWORD_DEFAULT);
-            mysqli_query($conn, "UPDATE users SET password='$pass' WHERE id=$id AND role='tenant'");
+            // Update tenant info
+            mysqli_query($conn, "UPDATE tenants SET name='$name',room_number='$room',contact='$contact',start_date='$start',rent_amount=$rent,address='$address' WHERE tenant_id=$id");
+            // Update account username if changed and unique
+            $existsUser = mysqli_query($conn, "SELECT id FROM users WHERE username='$username' AND id <> $id LIMIT 1");
+            if (mysqli_num_rows($existsUser) === 0) {
+                mysqli_query($conn, "UPDATE users SET username='$username' WHERE id=$id AND role='tenant'");
+            } else {
+                $msg = $msg ? $msg : "⚠ Username already exists";
+            }
+            if (!empty($_POST['password'])) {
+                $pass = password_hash($_POST['password'], PASSWORD_DEFAULT);
+                mysqli_query($conn, "UPDATE users SET password='$pass' WHERE id=$id AND role='tenant'");
+            }
         }
     }
 }
@@ -160,7 +172,7 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
   .stat-card{ border:0; border-radius:12px; overflow:hidden; box-shadow:0 4px 15px rgba(0,0,0,.08); }
   .stat-card .card-body{ padding:20px; }
   .stat-icon{ width:40px; height:40px; border-radius:8px; display:flex; align-items:center; justify-content:center; }
-  .room-badge{ font-size:.75rem; padding:4px 8px; border-radius:12px; }
+  .room-badge{ font-size:.85rem; font-weight:600; padding:6px 10px; border-radius:12px; margin-bottom:4px; }
   .room-full{ background:#dc3545; color:#fff; }
   .room-available{ background:#28a745; color:#fff; }
   .room-partial{ background:#fd7e14; color:#fff; }
@@ -251,21 +263,21 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
     </div>
   </div>
 
-  <div class="d-flex justify-content-between align-items-center mb-3">
+  <div class="mb-3">
     <h3 class="mb-0">Tenant Management</h3>
-    <div>
-      <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addModal"><i class="bi bi-person-plus me-1"></i>Add Tenant</button>
-    </div>
   </div>
 
   <!-- Search bar -->
-  <form method="GET" class="d-flex mb-3 search-w">
-    <input type="text" name="search"
-           value="<?=htmlspecialchars($search)?>" 
-           placeholder="Search by name, room, contact, or username"
-           class="form-control me-2">
-  <button class="btn btn-sm btn-primary" title="Search"><i class="bi bi-search"></i></button>
-  </form>
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap">
+    <form method="GET" class="d-flex search-w flex-grow-1 me-2" style="min-width: 0;">
+      <input type="text" name="search"
+             value="<?=htmlspecialchars($search)?>"
+             placeholder="Search by name, room, contact, or username"
+             class="form-control me-2" style="min-width: 0;">
+      <button class="btn btn-sm btn-primary" title="Search"><i class="bi bi-search"></i></button>
+    </form>
+    <button class="btn btn-primary flex-shrink-0" data-bs-toggle="modal" data-bs-target="#addModal"><i class="bi bi-person-plus me-1"></i>Add Tenant</button>
+  </div>
 
   <?php if($msg) echo "<div class='alert alert-warning'>$msg</div>"; ?>
 
@@ -276,6 +288,7 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
           <th>Tenant</th>
           <th>Room</th>
           <th>Contact</th>
+          <th>Address</th>
           <th>Start Date</th>
           <th>Rent</th>
           <th>Payment Status</th>
@@ -311,16 +324,18 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
             </div>
           </div>
         </td>
-        <td>
-          <span class="room-badge room-<?=$room_status?>">Room <?=$t['room_number']?></span>
+        <td style="width: 120px;">
+          <div class="fw-semibold">Room <?=$t['room_number']?></div>
           <div class="text-muted small"><?=$room_count?>/6 tenants</div>
         </td>
         <td>
           <div class="fw-semibold"><?=$t['contact']?></div>
         </td>
         <td>
+          <div class="fw-semibold"><?=htmlspecialchars($t['address'])?></div>
+        </td>
+        <td>
           <div class="fw-semibold"><?=date('M d, Y', strtotime($t['start_date']))?></div>
-          <div class="text-muted small"><?=date('Y', strtotime($t['start_date']))?></div>
         </td>
         <td>
           <div class="fw-semibold">₱<?=number_format($t['rent_amount'],2)?></div>
@@ -366,6 +381,7 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
             <input type="text" name="room_number" class="form-control mb-2" value="<?=$t['room_number']?>" required>
             <input type="text" name="contact" class="form-control mb-2" value="<?=$t['contact']?>" maxlength="11" pattern="09\d{9}"
                    oninput="this.value='09'+this.value.replace(/[^0-9]/g,'').slice(2,11)">
+            <input type="text" name="address" class="form-control mb-2" value="<?=htmlspecialchars($t['address'])?>" placeholder="Address" required>
             <input type="date"   name="start_date" class="form-control mb-2" value="<?=$t['start_date']?>" required>
             <input type="number" name="rent_amount" step="0.01" class="form-control mb-2" value="<?=$t['rent_amount']?>" required>
             <input type="text"   name="username" class="form-control mb-2" value="<?=$t['username']?>" required>
@@ -393,6 +409,7 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
                     <p><strong>Name:</strong> <?=htmlspecialchars($t['name'])?></p>
                     <p><strong>Username:</strong> @<?=htmlspecialchars($t['username'])?></p>
                     <p><strong>Contact:</strong> <?=$t['contact']?></p>
+                    <p><strong>Address:</strong> <?=htmlspecialchars($t['address'])?></p>
                     <p><strong>Start Date:</strong> <?=date('F d, Y', strtotime($t['start_date']))?></p>
                   </div>
                 </div>
@@ -449,8 +466,9 @@ $unpaid_tenants = mysqli_fetch_assoc(mysqli_query($conn, "
       <div class="modal-body">
         <input type="text" name="name" class="form-control mb-2" placeholder="Name" required>
         <input type="text" name="room_number" class="form-control mb-2" placeholder="Room" required>
-        <input type="text" name="contact" class="form-control mb-2" placeholder="Contact"
-               value="09" maxlength="11" pattern="09\d{9}" oninput="this.value='09'+this.value.replace(/[^0-9]/g,'').slice(2,11)" required>
+<input type="text" name="contact" class="form-control mb-2" placeholder="Contact"
+               maxlength="11" pattern="09\d{9}" oninput="this.value='09'+this.value.replace(/[^0-9]/g,'').slice(2,11)" required>
+        <input type="text" name="address" class="form-control mb-2" placeholder="Address" required>
         <input type="date" name="start_date" class="form-control mb-2" required>
         <input type="number" step="0.01" name="rent_amount" class="form-control mb-2" placeholder="Rent" required>
         <input type="text" name="username"   class="form-control mb-2" placeholder="Username" required>

@@ -9,38 +9,65 @@ require_once '../config/db.php';
 $msg = '';
 $step = $_POST['step'] ?? 'form';
 
-// Generate OTP and send email
+// --- VALIDATION BEFORE SENDING OTP ---
 if ($step === 'send_otp' && isset($_POST['gmail'])) {
-    $otp = rand(100000, 999999);
-    $_SESSION['admin_otp'] = $otp;
-    $_SESSION['admin_profile'] = [
-        'gmail' => $_POST['gmail'],
-        'username' => $_POST['username'],
-        'password' => $_POST['password'],
-    ];
-    // Send OTP to new Gmail
-    require_once '../vendor/autoload.php';
-    $mail = new PHPMailer\PHPMailer\PHPMailer(true);
-    try {
-        $mail->isSMTP();
-        $mail->Host = 'smtp.gmail.com';
-        $mail->SMTPAuth = true;
-        $mail->Username = 'danaojarviee@gmail.com';
-        $mail->Password = 'zjknoprzazaieoak';
-        $mail->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
-        $mail->setFrom('example@gmail.com', 'Boarding House System');
-        $mail->addAddress($_POST['gmail']);
-        $mail->Subject = 'OTP for Admin Profile Update';
-        $mail->Body = "Your OTP code is: $otp";
-        $mail->send();
-        $msg = 'OTP sent to your new Gmail address.';
-        $step = 'verify_otp';
-    } catch (Exception $e) {
-        $msg = 'Error sending OTP: ' . $mail->ErrorInfo;
+    $gmail = trim($_POST['gmail']);
+    $username = trim($_POST['username']);
+    $password = $_POST['password'];
+    $confirm_password = $_POST['confirm_password'];
+
+    // Validate password match
+    if ($password !== $confirm_password) {
+        $msg = 'Passwords do not match.';
+        $step = 'form';
+    }
+    // Validate email existence (excluding current admin)
+    else {
+        $check_email = "SELECT id FROM users WHERE email = ? AND role != 'admin' LIMIT 1";
+        $stmt = mysqli_prepare($conn, $check_email);
+        mysqli_stmt_bind_param($stmt, 's', $gmail);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_store_result($stmt);
+
+        if (mysqli_stmt_num_rows($stmt) > 0) {
+            $msg = 'Email already exists. Please use a different email.';
+            $step = 'form';
+        } else {
+            // Proceed with OTP generation and sending
+            $otp = rand(100000, 999999);
+            $_SESSION['admin_otp'] = $otp;
+            $_SESSION['admin_profile'] = [
+                'gmail' => $gmail,
+                'username' => $username,
+                'password' => $password,
+            ];
+            // Send OTP to new Gmail
+            require_once '../vendor/autoload.php';
+            $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+            try {
+                $mail->isSMTP();
+                $mail->Host = 'smtp.gmail.com';
+                $mail->SMTPAuth = true;
+                $mail->Username = 'danaojarviee@gmail.com';
+                $mail->Password = 'zjknoprzazaieoak';
+                $mail->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+                $mail->Port = 587;
+                $mail->setFrom('example@gmail.com', 'Boarding House System');
+                $mail->addAddress($gmail);
+                $mail->Subject = 'OTP for Admin Profile Update';
+                $mail->Body = "Your OTP code is: $otp";
+                $mail->send();
+                $msg = 'OTP sent to your new Gmail address.';
+                $step = 'verify_otp';
+            } catch (Exception $e) {
+                $msg = 'Error sending OTP: ' . $mail->ErrorInfo;
+            }
+            mysqli_stmt_close($stmt);
+        }
     }
 }
-// Verify OTP and update profile
+
+// --- VERIFY OTP AND UPDATE PROFILE ---
 if ($step === 'verify_otp' && isset($_POST['otp'])) {
     if ($_POST['otp'] == ($_SESSION['admin_otp'] ?? '')) {
         $profile = $_SESSION['admin_profile'];
@@ -112,7 +139,7 @@ if ($step === 'verify_otp' && isset($_POST['otp'])) {
                     </div>
                 </form>
                 <?php elseif ($step === 'verify_otp'): ?>
-                <form method="post" onsubmit="return validateProfilePasswords()">
+                <form method="post">
                     <input type="hidden" name="step" value="verify_otp">
                     <div class="mb-3">
                         <label class="form-label">Enter OTP</label>
@@ -142,15 +169,7 @@ function togglePassword(fieldId, btn) {
         icon.classList.add('bi-eye');
     }
 }
-function validateProfilePasswords() {
-    var pw = document.getElementById('profile_password').value;
-    var cpw = document.getElementById('profile_confirm_password').value;
-    if (pw !== cpw) {
-        alert('New password and confirm password do not match.');
-        return false;
-    }
-    return true;
-}
+
 </script>
 </body>
 </html>

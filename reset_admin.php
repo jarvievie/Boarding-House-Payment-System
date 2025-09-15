@@ -19,8 +19,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (mysqli_stmt_execute($stmt)) {
                     $msg = 'Admin credentials updated! Please delete this file now.';
                 } else {
-                    $msg = 'Error updating admin.';
-                }
+                    $msg = 'Error updating admin: ' . mysqli_error($conn);
+                }//comment
                 mysqli_stmt_close($stmt);
             } else {
                 $msg = 'New password and confirm password do not match.';

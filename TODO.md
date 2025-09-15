@@ -1,0 +1,3 @@
+- [x] Add server-side validation for mobile number in add tenant to ensure it starts with "09" and is 11 digits
+- [x] Add server-side validation for mobile number in update tenant to ensure it starts with "09" and is 11 digits
+- [x] Test the changes (syntax checked, ready for user testing)

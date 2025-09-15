@@ -45,10 +45,9 @@ if (isset($_POST['save_profile'])) {
     $_SESSION['tenant'] = $username;
 }
 
-// Enhanced payment logic and notification system
 $start_day = (new DateTime($tenant['start_date']))->format('d');
 $rent_amount = floatval($tenant['rent_amount']);
-$payments = mysqli_query($conn, "SELECT * FROM payments WHERE tenant_id = '$tenant_id' ORDER BY month_paid ASC");
+$payments = mysqli_query($conn, "SELECT * FROM payments WHERE tenant_id = '$tenant_id' ORDER BY month_paid ASC, date_paid ASC");
 
 ?>
 <script>
@@ -296,6 +295,50 @@ $show_reminder = $notification_count > 0;
         </div>
     </div>
 
+    <!-- Current Month Payment Status -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card stat-card">
+                <div class="card-body d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="text-muted small">Current Month Status</div>
+                        <div class="h5 mb-0 fw-semibold">
+                            <?php
+                            $current_amount = $current_payment ? floatval($current_payment['total']) : 0;
+                            $status = $current_amount >= $rent_amount ? 'Paid' : ($current_amount > 0 ? 'Partial' : 'Unpaid');
+                            echo $status;
+                            ?>
+                        </div>
+                    </div>
+                    <div class="stat-icon" style="background:<?php
+                        if ($status === 'Paid') echo 'var(--bh-teal)';
+                        elseif ($status === 'Partial') echo '#fd7e14';
+                        else echo '#dc3545';
+                    ?>; color:#fff;">
+                        <i class="bi <?php
+                        if ($status === 'Paid') echo 'bi-check-circle-fill';
+                        elseif ($status === 'Partial') echo 'bi-clock-fill';
+                        else echo 'bi-exclamation-triangle-fill';
+                        ?>"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card stat-card">
+                <div class="card-body d-flex align-items-center justify-content-between">
+                    <div>
+                        <div class="text-muted small">Amount Paid</div>
+                        <div class="h5 mb-0 fw-semibold">₱<?= number_format($current_amount, 2) ?> / ₱<?= number_format($rent_amount, 2) ?></div>
+                    </div>
+                    <div class="stat-icon" style="background:var(--bh-sand); color:var(--bh-deep);">
+                        <i class="bi bi-currency-dollar"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <?php if ($show_reminder): ?>
         <div class="row mb-4">
             <div class="col-12">
@@ -340,17 +383,12 @@ $show_reminder = $notification_count > 0;
             <tbody>
                 <?php while ($row = mysqli_fetch_assoc($payments)) {
                     $amount = floatval($row['amount']);
-                    $rent = $rent_amount;
-                    if ($amount >= $rent) {
-                        $status = 'Paid';
-                    } elseif ($amount > 0) {
-                        $status = 'Partial';
-                    } else {
-                        $status = 'Unpaid';
-                    }
-                    $display_amount = ($status === 'Paid') ? number_format($amount, 2) : (($status === 'Partial') ? number_format($amount, 2) . ' / ' . number_format($rent, 2) : '0.00 / ' . number_format($rent, 2));
+                    $total_for_month = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id='$tenant_id' AND month_paid='".$row['month_paid']."'"))['total'];
+                    if ($amount == 0 && $total_for_month > 0) continue; // Skip 0 amount rows if there are payments in the month
+                    $status = $total_for_month >= $rent_amount ? 'Paid' : ($total_for_month > 0 ? 'Partial' : 'Unpaid');
+                    $display_amount = $amount == 0 ? "0.00 / ".number_format($rent_amount, 2) : number_format($amount, 2);
                     $month_display = DateTime::createFromFormat('Y-m', $row['month_paid'])->format('F Y');
-                    $day_display   = $row['date_paid'] ? (new DateTime($row['date_paid']))->format('d F Y') : '-';
+                    $day_display   = ($row['date_paid']) ? (new DateTime($row['date_paid']))->format('d F Y') : '';
                     $receiver = !empty($row['received_by']) ? htmlspecialchars($row['received_by']) : 'admin';
                 ?>
                 <tr>
@@ -358,20 +396,9 @@ $show_reminder = $notification_count > 0;
                     <td><?php echo $day_display; ?></td>
                     <td>₱<?php echo $display_amount; ?></td>
                     <td>
-                        <div class="d-flex align-items-center gap-2">
-                            <span class="badge badge-<?php echo strtolower($status); ?> payment-status" style="font-size:0.85em; padding:4px 10px; min-width:70px; text-align:center;">
-                                <?php echo $status; ?>
-                            </span>
-                            <div class="small text-muted">
-                                <?php if($status === 'Partial'): ?>
-                                    ₱<?php echo number_format($amount, 2); ?> / ₱<?php echo number_format($rent, 2); ?>
-                                <?php elseif($status === 'Paid'): ?>
-                                    Complete
-                                <?php else: ?>
-                                    ₱0.00 / ₱<?php echo number_format($rent, 2); ?>
-                                <?php endif; ?>
-                            </div>
-                        </div>
+                        <span class="badge badge-<?php echo strtolower($status); ?> payment-status" style="font-size:0.85em; padding:4px 10px; min-width:70px; text-align:center;">
+                            <?php echo $status; ?>
+                        </span>
                     </td>
                     <td><?php echo $receiver; ?></td>
                 </tr>

@@ -17,20 +17,14 @@ if(isset($_POST['record_payment'])) {
   $received_by = mysqli_real_escape_string($conn, $_POST['received_by'] ?? '');
   $rent      = mysqli_fetch_assoc(mysqli_query($conn,"SELECT rent_amount FROM tenants WHERE tenant_id=$tenant_id"))['rent_amount'];
 
-  // Insert a new payment record for each payment (partial or full)
-  // Always use 'Unpaid' for new payments, then update status below
-  mysqli_query($conn, "INSERT INTO payments (tenant_id, month_paid, amount, payment_method, status, remarks, date_paid, received_by) VALUES ($tenant_id, '$month', $amount, '', 'Unpaid', NULL, NOW(), '$received_by')");
+  // Always insert a new payment record for each transaction
+  mysqli_query($conn, "INSERT INTO payments (tenant_id, month_paid, amount, payment_method, status, remarks, date_paid, received_by) VALUES ($tenant_id, '$month', $amount, '', 'Pending', NULL, NOW(), '$received_by')");
 
-  // Recalculate payment status for the month
+  // Update the status to 'Paid' if total payments for the month reach rent_amount
   $total_paid = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id=$tenant_id AND month_paid='$month'"))['total'];
   if($total_paid >= $rent) {
-    $new_status = 'Paid';
-  } elseif($total_paid > 0) {
-    $new_status = 'Partial';
-  } else {
-    $new_status = 'Unpaid';
+    mysqli_query($conn, "UPDATE payments SET status='Paid' WHERE tenant_id=$tenant_id AND month_paid='$month'");
   }
-  mysqli_query($conn, "UPDATE payments SET status='$new_status' WHERE tenant_id=$tenant_id AND month_paid='$month'");
 }
 
 /* Modify months: add or delete */
@@ -45,7 +39,7 @@ if(isset($_POST['modify_months'])){
     $d = new DateTime($baseMonth.'-01');
     for($i=0;$i<$n;$i++){
       $d->modify('+1 month');
-      mysqli_query($conn,"INSERT INTO payments(tenant_id,month_paid,amount,status) VALUES($tid,'".$d->format('Y-m')."',0,'Unpaid')");
+      mysqli_query($conn,"INSERT INTO payments(tenant_id,month_paid,amount) VALUES($tid,'".$d->format('Y-m')."',0)");
     }
   }
 
@@ -54,21 +48,6 @@ if(isset($_POST['modify_months'])){
     $res = mysqli_query($conn,"SELECT payment_id FROM payments WHERE tenant_id=$tid AND amount=0 ORDER BY month_paid DESC LIMIT $n");
     while($row = mysqli_fetch_assoc($res)){
       mysqli_query($conn,"DELETE FROM payments WHERE payment_id=".$row['payment_id']);
-    }
-    // After deletion, recalculate status for remaining months for this tenant
-    $months_res = mysqli_query($conn,"SELECT DISTINCT month_paid FROM payments WHERE tenant_id=$tid");
-    while($mrow = mysqli_fetch_assoc($months_res)){
-      $month = $mrow['month_paid'];
-      $rent = mysqli_fetch_assoc(mysqli_query($conn,"SELECT rent_amount FROM tenants WHERE tenant_id=$tid"))['rent_amount'];
-      $total_paid = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id=$tid AND month_paid='$month'"))['total'];
-      if($total_paid >= $rent) {
-        $new_status = 'Paid';
-      } elseif($total_paid > 0) {
-        $new_status = 'Partial';
-      } else {
-        $new_status = 'Unpaid';
-      }
-      mysqli_query($conn, "UPDATE payments SET status='$new_status' WHERE tenant_id=$tid AND month_paid='$month'");
     }
   }
 }
@@ -319,9 +298,9 @@ $current_month_income = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amoun
               <label class="form-label">Select Month</label>
               <select name="month" class="form-select" required>
                 <?php
-                  $p2 = mysqli_query($conn,"SELECT * FROM payments WHERE tenant_id=".$t['tenant_id']." ORDER BY month_paid ASC");
+                  $p2 = mysqli_query($conn,"SELECT month_paid, SUM(amount) as total_amount FROM payments WHERE tenant_id=".$t['tenant_id']." GROUP BY month_paid ORDER BY month_paid ASC");
                   while($row=mysqli_fetch_assoc($p2)){
-                    $paid = $row['amount'] >= $t['rent_amount'];
+                    $paid = $row['total_amount'] >= $t['rent_amount'];
                     echo '<option value="'.$row['month_paid'].'" '.($paid?'disabled':'').'>'.$row['month_paid'].($paid?' (Paid)':'').'</option>';
                   }
                 ?>
@@ -355,9 +334,12 @@ $current_month_income = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amoun
         </div>
         <div class="modal-body">
           <?php
-            $p = mysqli_query($conn,"SELECT * FROM payments WHERE tenant_id=".$t['tenant_id']." ORDER BY month_paid ASC, date_paid ASC");
+$p = mysqli_query($conn,"SELECT * FROM payments WHERE tenant_id=".$t['tenant_id']." ORDER BY month_paid ASC, date_paid ASC");
             while($row=mysqli_fetch_assoc($p)){
-              $status = $row['amount'] >= $t['rent_amount'] ? 'Paid' : ($row['amount']>0?'Partial':'Unpaid');
+              $amount = floatval($row['amount']);
+              $total_for_month = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amount) as total FROM payments WHERE tenant_id=".$t['tenant_id']." AND month_paid='".$row['month_paid']."'"))['total'];
+              if ($amount == 0 && $total_for_month > 0) continue; // Skip 0 amount rows if there are payments in the month
+              $status = $total_for_month >= $t['rent_amount'] ? 'Paid' : ($total_for_month > 0 ? 'Partial' : 'Unpaid');
               $status_class = strtolower($status);
               $month_display = DateTime::createFromFormat('Y-m', $row['month_paid'])->format('F Y');
               $date_display = $row['date_paid'] ? (new DateTime($row['date_paid']))->format('M d, Y') : 'Not paid';
@@ -372,7 +354,7 @@ $current_month_income = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(amoun
               </div>
               <div class="text-end">
                 <span class="badge badge-<?=$status_class?> payment-status"><?=$status?></span>
-                <div class="fw-semibold">₱<?= number_format($row['amount'], 2) ?></div>
+                <div class="fw-semibold">₱<?= $amount == 0 ? "0.00 / ".number_format($t['rent_amount'], 2) : number_format($row['amount'], 2) ?></div>
               </div>
             </div>
           </div>
